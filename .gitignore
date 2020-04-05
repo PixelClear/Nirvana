@@ -1,0 +1,7 @@
+.vs/
+Nirvana/*.vcxproj
+Nirvana/*.vcxproj.*
+Nirvana/Debug
+Nirvana/Release
+Nirvana/x64/*
+x64/*
