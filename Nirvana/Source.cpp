@@ -1,5 +1,7 @@
 #include <stdio.h>
 #include <assert.h>
+#include <algorithm>
+#include <limits>
 #include <optional>
 #include <vector>
 #include <set>
@@ -36,6 +38,13 @@ typedef struct QueueIndexFamily
         return graphicsFamily.has_value() && presentFamily.has_value();
     }
 }QueueIndexFamily;
+
+struct SwapChainDetails
+{
+    VkSurfaceCapabilitiesKHR capabilities;
+    std::vector<VkSurfaceFormatKHR> formats;
+    std::vector<VkPresentModeKHR> presentModes;
+};
 
 VkInstance createInstance()
 {
@@ -142,22 +151,20 @@ bool requiredDeviceExtensionSupported(VkPhysicalDevice device)
     return false;
 }
 
-bool getSurfaceCompatibility(VkPhysicalDevice device, VkSurfaceKHR surface)
+SwapChainDetails getSurfaceCompatibility(VkPhysicalDevice device, VkSurfaceKHR surface)
 {
-    VkSurfaceCapabilitiesKHR capabilities = {};
-    std::vector<VkSurfaceFormatKHR> formats;
-    std::vector<VkPresentModeKHR> presentModes;
+    SwapChainDetails details;
 
     //Below functions are part of VK_KHR_Surface extension
-    VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &capabilities));
+    VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &details.capabilities));
 
     uint32_t formatCount = 0;
     VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount, 0));
 
     if (formatCount != 0)
     {
-        formats.resize(formatCount);
-        VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount, formats.data()));
+        details.formats.resize(formatCount);
+        VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount, details.formats.data()));
     }
 
     uint32_t presentModeCount = 0;
@@ -165,14 +172,14 @@ bool getSurfaceCompatibility(VkPhysicalDevice device, VkSurfaceKHR surface)
 
     if (presentModeCount != 0)
     {
-        presentModes.resize(presentModeCount);
-        VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &presentModeCount, presentModes.data()));
+        details.presentModes.resize(presentModeCount);
+        VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &presentModeCount, details.presentModes.data()));
     }
 
-    return !formats.empty() && !presentModes.empty();
+    return details;
 }
 
-VkPhysicalDevice pickPhysicalDevice(VkInstance instance, VkSurfaceKHR surface)
+VkPhysicalDevice pickPhysicalDevice(VkInstance instance, VkSurfaceKHR surface, QueueIndexFamily& outIndices, SwapChainDetails& outDetails)
 {
     uint32_t deviceCount = 0;
 
@@ -187,10 +194,13 @@ VkPhysicalDevice pickPhysicalDevice(VkInstance instance, VkSurfaceKHR surface)
         {
             QueueIndexFamily indices = getQueueFamilyIndices(device, surface);
             bool reqExtensionSupported = requiredDeviceExtensionSupported(device);
-            bool surfaceCompatible = getSurfaceCompatibility(device, surface);
+            SwapChainDetails details = getSurfaceCompatibility(device, surface);
+            bool surfaceCompatible = !details.formats.empty() && !details.presentModes.empty();
 
             if (indices.isComplete() && reqExtensionSupported && surfaceCompatible)
             {
+                outIndices = indices;
+                outDetails = details;
                 return device;
             }
         }
@@ -199,10 +209,9 @@ VkPhysicalDevice pickPhysicalDevice(VkInstance instance, VkSurfaceKHR surface)
     return VK_NULL_HANDLE;
 }
 
-VkDevice createLogicalDevice(VkPhysicalDevice device, VkSurfaceKHR surface)
+VkDevice createLogicalDevice(VkPhysicalDevice device, VkSurfaceKHR surface,  QueueIndexFamily indices)
 {
     //device can create multiple qs instance here it will create two qs one for present and other for graphics
-    QueueIndexFamily indices = getQueueFamilyIndices(device, surface);
     std::set<uint32_t> uniqueIndices = {indices.graphicsFamily.value(), indices.presentFamily.value()};
     std::vector<VkDeviceQueueCreateInfo> qCreateInfo = {};
 
@@ -227,7 +236,7 @@ VkDevice createLogicalDevice(VkPhysicalDevice device, VkSurfaceKHR surface)
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     createInfo.pNext = 0;
     createInfo.flags = 0;
-    createInfo.queueCreateInfoCount = qCreateInfo.size();
+    createInfo.queueCreateInfoCount = static_cast<uint32_t>(qCreateInfo.size());
     createInfo.pQueueCreateInfos = qCreateInfo.data();
 #ifdef _DEBUG
     createInfo.ppEnabledLayerNames = debugLayers;
@@ -243,32 +252,92 @@ VkDevice createLogicalDevice(VkPhysicalDevice device, VkSurfaceKHR surface)
     return logicalDevice;
 }
 
+VkSurfaceFormatKHR chooseSwapChainSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats)
+{
+    //If user has not specified anything
+    if (availableFormats.size() == 1 && availableFormats[0].format == VK_FORMAT_UNDEFINED)
+    {
+        return { VK_FORMAT_B8G8R8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR };
+    }
+
+    //If not provided with any option
+    for (const auto& availableFormat : availableFormats)
+    {
+        if (availableFormat.format == VK_FORMAT_B8G8R8A8_UNORM && availableFormat.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+        {
+            return availableFormat;
+        }
+    }
+
+    //Else just return the first format
+    return availableFormats[0];
+}
+
+VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR> availablePresentModes)
+{
+    VkPresentModeKHR bestMode = VK_PRESENT_MODE_FIFO_KHR;
+
+    for (const auto& availablePresentMode : availablePresentModes)
+    {
+        if (availablePresentMode == VK_PRESENT_MODE_MAILBOX_KHR)
+        {
+            bestMode = availablePresentMode;
+        }
+        else if (availablePresentMode == VK_PRESENT_MODE_IMMEDIATE_KHR)
+        {
+            bestMode = availablePresentMode;
+        }
+    }
+
+    return bestMode;
+}
 
 //ToDo: Cleanup
-VkSwapchainKHR createSwapchain(VkDevice device, VkPhysicalDevice pDevice, VkSurfaceKHR surface)
+VkSwapchainKHR createSwapchain(VkDevice device, VkPhysicalDevice pDevice, VkSurfaceKHR surface, QueueIndexFamily indices, SwapChainDetails details)
 {
+    VkSurfaceFormatKHR imageFormat = chooseSwapChainSurfaceFormat(details.formats);
+    VkPresentModeKHR presentMode = chooseSwapPresentMode(details.presentModes);
+    VkExtent2D extents = { width, height };
+
+    uint32_t imageCount = details.capabilities.minImageCount + 1;
+
+    if (details.capabilities.maxImageCount > 0 && imageCount > details.capabilities.maxImageCount)
+    {
+        imageCount = details.capabilities.maxImageCount;
+    }
 
     VkSwapchainKHR swapChain;
-    QueueIndexFamily indices = getQueueFamilyIndices(pDevice, surface);
 
     VkSwapchainCreateInfoKHR createInfo = {};
     createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
     createInfo.pNext = 0;
     createInfo.surface = surface;
-    createInfo.minImageCount = 2; //capabilities.mincount
-    createInfo.imageFormat = VK_FORMAT_R8G8B8A8_UNORM; //formats from swapchain details
-    createInfo.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR; //capabilities.colorspace
-    createInfo.imageExtent = VkExtent2D{ width, height };
+    createInfo.minImageCount = imageCount;
+    createInfo.imageFormat = imageFormat.format;
+    createInfo.imageColorSpace = imageFormat.colorSpace;
+    createInfo.imageExtent = extents;
     createInfo.imageArrayLayers = 1;
     createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE; //Should set based on presentqfamily and graphicsqfamily indices
-    createInfo.queueFamilyIndexCount = 1;//Hack shoule be set as above
-    createInfo.pQueueFamilyIndices = &indices.graphicsFamily.value();//Hack shoule be set as above
-    //createInfo.preTransform =;
-    //createInfo.compositeAlpha =;
-    createInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR; //Also set on query from surface capabilities
-    //createInfo.clipped =;
-    //createInfo.oldSwapchain =;
+    
+    if (indices.graphicsFamily.value() != indices.presentFamily.value())
+    {
+        uint32_t familyIndices[] = { indices.graphicsFamily.value() ,indices.presentFamily.value() };
+        createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT; 
+        createInfo.queueFamilyIndexCount = sizeof(familyIndices) / sizeof(familyIndices[0]);
+        createInfo.pQueueFamilyIndices = familyIndices;
+    }
+    else
+    {
+        createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE; 
+        createInfo.queueFamilyIndexCount = 1;
+        createInfo.pQueueFamilyIndices = &indices.graphicsFamily.value(); //Same q family so any index can be used
+    }
+
+    createInfo.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+    createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    createInfo.presentMode = presentMode; 
+    createInfo.clipped = VK_TRUE;
+    createInfo.oldSwapchain = VK_NULL_HANDLE;
 
     VK_CHECK(vkCreateSwapchainKHR(device, &createInfo, 0, &swapChain));
 
@@ -285,10 +354,8 @@ VkSemaphore createSemaphore(VkDevice device)
     return semaphore;
 }
 
-VkCommandPool createCommandPool(VkDevice device, VkPhysicalDevice pDevice, VkSurfaceKHR surface)
+VkCommandPool createCommandPool(VkDevice device, VkPhysicalDevice pDevice, VkSurfaceKHR surface, QueueIndexFamily indices)
 {
-    QueueIndexFamily indices = getQueueFamilyIndices(pDevice, surface); //ToDo: Hack needs to clean up this index code
-
     VkCommandPoolCreateInfo createInfo = {};
     createInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     createInfo.flags = 0;
@@ -331,13 +398,15 @@ int main()
 
     //Pick physical device have graphics q + presentation q + swapchain support(has formats and so on) + present to this surface
     //indices.isComplete() && extensionSupported && surfaceCompatible;
-    VkPhysicalDevice physicalDevice = pickPhysicalDevice(instance, surface);
+    QueueIndexFamily indices;
+    SwapChainDetails details;
+    VkPhysicalDevice physicalDevice = pickPhysicalDevice(instance, surface, indices, details);
     assert(physicalDevice);
 
-    VkDevice device = createLogicalDevice(physicalDevice, surface);
+    VkDevice device = createLogicalDevice(physicalDevice, surface, indices);
     assert(device);
   
-    VkSwapchainKHR swapChain = createSwapchain(device, physicalDevice, surface);
+    VkSwapchainKHR swapChain = createSwapchain(device, physicalDevice, surface, indices, details);
     assert(swapChain);
 
     uint32_t imageCount = 0;
@@ -348,7 +417,6 @@ int main()
     VK_CHECK(vkGetSwapchainImagesKHR(device, swapChain, &imageCount, images.data()));
     assert(images.size() != 0);
 
-    QueueIndexFamily indices = getQueueFamilyIndices(physicalDevice, surface);
     VkQueue queue;
     vkGetDeviceQueue(device, indices.graphicsFamily.value(), 0, &queue); //Hack needs to get separate present and graphics q
 
@@ -357,7 +425,7 @@ int main()
     VkSemaphore cmdSubmited = createSemaphore(device);
     assert(cmdSubmited);
 
-    VkCommandPool pool = createCommandPool(device, physicalDevice, surface);
+    VkCommandPool pool = createCommandPool(device, physicalDevice, surface, indices);
     assert(pool);
     
     VkCommandBuffer cmdBuffer = createCommandBuffer(device, pool);
