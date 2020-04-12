@@ -367,6 +367,28 @@ VkCommandPool createCommandPool(VkDevice device, VkPhysicalDevice pDevice, VkSur
     return commandPool;
 }
 
+VkImageView createImageView(VkDevice device, VkImage swapchainImage, SwapChainDetails details)
+{
+    VkImageViewCreateInfo createInfo = {};
+    createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    createInfo.image = swapchainImage;
+    createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    createInfo.format = chooseSwapChainSurfaceFormat(details.formats).format;
+    createInfo.components = { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, 
+                              VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
+    createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    createInfo.subresourceRange.baseArrayLayer = 0;
+    createInfo.subresourceRange.baseMipLevel = 0;
+    createInfo.subresourceRange.layerCount = 1;
+    createInfo.subresourceRange.levelCount = 1;
+
+    VkImageView view;
+
+    VK_CHECK(vkCreateImageView(device, &createInfo, 0, &view));
+
+    return view;
+}
+
 VkCommandBuffer createCommandBuffer(VkDevice device, VkCommandPool pool)
 {
     VkCommandBuffer cmdBuffer;
@@ -379,6 +401,62 @@ VkCommandBuffer createCommandBuffer(VkDevice device, VkCommandPool pool)
     VK_CHECK(vkAllocateCommandBuffers(device, &allocateInfo, &cmdBuffer));
 
     return cmdBuffer;
+}
+
+VkRenderPass createRenderPass(VkDevice device, SwapChainDetails details)
+{
+    VkRenderPass renderPass;
+
+    VkAttachmentDescription attachment[1]; //Hack : Currently we only have color attachment
+    attachment[0].flags = 0;
+    attachment[0].format = chooseSwapChainSurfaceFormat(details.formats).format;
+    attachment[0].samples = VK_SAMPLE_COUNT_1_BIT;
+    attachment[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachment[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachment[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachment[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachment[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    attachment[0].finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+    VkAttachmentReference colorAttachment = { 0 , VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+
+    VkSubpassDescription subpassDesc[1] = {}; //Currently we have one but will be many
+    subpassDesc[0].pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpassDesc[0].colorAttachmentCount = 1;
+    subpassDesc[0].pColorAttachments = &colorAttachment;
+    
+    VkRenderPassCreateInfo createInfo = {};
+
+    createInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    createInfo.attachmentCount = sizeof(attachment) / sizeof(attachment[0]);
+    createInfo.pAttachments = attachment;
+    createInfo.subpassCount = sizeof(subpassDesc) / sizeof(subpassDesc[0]);
+    createInfo.pSubpasses = subpassDesc;
+    //createInfo.dependencyCount; //Not filling currently
+    //createInfo.pDependencies; //Not filling currently
+    
+    VK_CHECK(vkCreateRenderPass(device, &createInfo, 0, &renderPass));
+
+    return renderPass;
+}
+
+VkFramebuffer createFramebuffer(VkDevice device, VkRenderPass renderPass, VkImageView imageView)
+{
+    VkFramebuffer framebuffer;
+
+    VkFramebufferCreateInfo createInfo = {  };
+    createInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    createInfo.renderPass  = renderPass;
+    createInfo.attachmentCount = 1;
+    createInfo.pAttachments = &imageView;
+    createInfo.width = width;
+    createInfo.height = height;
+    createInfo.layers = 1;
+
+    VK_CHECK(vkCreateFramebuffer(device, &createInfo, 0, &framebuffer));
+
+    return framebuffer;
+
 }
 
 int main()
@@ -409,13 +487,30 @@ int main()
     VkSwapchainKHR swapChain = createSwapchain(device, physicalDevice, surface, indices, details);
     assert(swapChain);
 
-    uint32_t imageCount = 0;
+    uint32_t swapchainImageCount = 0;
     std::vector<VkImage> images;
-    VK_CHECK(vkGetSwapchainImagesKHR(device, swapChain, &imageCount, 0));
-    assert(imageCount != 0);
-    images.resize(imageCount);
-    VK_CHECK(vkGetSwapchainImagesKHR(device, swapChain, &imageCount, images.data()));
+    VK_CHECK(vkGetSwapchainImagesKHR(device, swapChain, &swapchainImageCount, 0));
+    assert(swapchainImageCount != 0);
+    images.resize(swapchainImageCount);
+    VK_CHECK(vkGetSwapchainImagesKHR(device, swapChain, &swapchainImageCount, images.data()));
     assert(images.size() != 0);
+
+    std::vector<VkImageView> imageViews(swapchainImageCount);
+    for (uint32_t i = 0; i < swapchainImageCount; i++)
+    {
+        imageViews[i] = createImageView(device, images[i] , details);
+        assert(imageViews[i]);
+    }
+
+    VkRenderPass renderPass = createRenderPass(device, details);
+    assert(renderPass);
+
+    std::vector<VkFramebuffer> frameBuffers(swapchainImageCount);
+    for (uint32_t i = 0; i < swapchainImageCount; i++)
+    {
+        frameBuffers[i] = createFramebuffer(device, renderPass, imageViews[i]);
+        assert(frameBuffers[i]);
+    }
 
     VkQueue queue;
     vkGetDeviceQueue(device, indices.graphicsFamily.value(), 0, &queue); //Hack needs to get separate present and graphics q
@@ -431,7 +526,7 @@ int main()
     VkCommandBuffer cmdBuffer = createCommandBuffer(device, pool);
     assert(cmdBuffer);
 
-    VkClearColorValue color = { 1.0f, 0.0f, 1.0f, 1.0f };
+    VkClearColorValue color = { 1.0f, 0.0f, 0.0f, 1.0f };
 
     while (!glfwWindowShouldClose(window))
     {
@@ -448,12 +543,20 @@ int main()
 
         VK_CHECK(vkBeginCommandBuffer(cmdBuffer, &beginInfo));
 
-        VkImageSubresourceRange range = {};
-        range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        range.layerCount = 1;
-        range.levelCount = 1;
+        VkClearValue clearColor[1] = { color };
 
-        vkCmdClearColorImage(cmdBuffer, images[imageIndex], VK_IMAGE_LAYOUT_GENERAL, &color, 1, &range);
+        VkRenderPassBeginInfo rBeginInfo = {};
+        rBeginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        rBeginInfo.renderPass = renderPass;
+        rBeginInfo.framebuffer = frameBuffers[imageIndex];
+        rBeginInfo.renderArea.extent.width = width;
+        rBeginInfo.renderArea.extent.height = height;
+        rBeginInfo.clearValueCount = sizeof(clearColor)/ sizeof(clearColor[0]);
+        rBeginInfo.pClearValues = clearColor;
+
+        vkCmdBeginRenderPass(cmdBuffer, &rBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+        vkCmdEndRenderPass(cmdBuffer);
 
         VK_CHECK(vkEndCommandBuffer(cmdBuffer));
 
