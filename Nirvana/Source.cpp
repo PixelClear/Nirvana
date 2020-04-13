@@ -67,8 +67,9 @@ VkInstance createInstance()
     {
        VK_KHR_SURFACE_EXTENSION_NAME,
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
-       VK_KHR_WIN32_SURFACE_EXTENSION_NAME
+       VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
 #endif
+       VK_EXT_DEBUG_UTILS_EXTENSION_NAME
     };
 
     createInfo.ppEnabledExtensionNames = extensionNames;
@@ -78,6 +79,46 @@ VkInstance createInstance()
     VK_CHECK(vkCreateInstance(&createInfo, 0, &instance));
 
     return instance;
+}
+
+VkBool32 debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+    VkDebugUtilsMessageTypeFlagsEXT messageType,
+    const VkDebugUtilsMessengerCallbackDataEXT*  pCallbackData,
+    void* pUserData)
+{
+    printf("MESSAGE : %s\n", pCallbackData->pMessage);
+
+    return VK_FALSE;
+}
+
+VkDebugUtilsMessengerEXT registerDebugMessenger(VkInstance instance)
+{
+    VkDebugUtilsMessengerCreateInfoEXT createInfo = {};
+    createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+    createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | 
+                                 VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
+                                 VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                                 VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT |
+                                 VK_DEBUG_UTILS_MESSAGE_SEVERITY_FLAG_BITS_MAX_ENUM_EXT;
+    createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                             VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                             VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT |
+                             VK_DEBUG_UTILS_MESSAGE_TYPE_FLAG_BITS_MAX_ENUM_EXT;
+    createInfo.pfnUserCallback = debugCallback;
+    createInfo.pUserData = nullptr;
+
+    auto vkCreateDebugUtilsMessengerEXT = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance , "vkCreateDebugUtilsMessengerEXT");
+
+    assert(vkCreateDebugUtilsMessengerEXT != nullptr);
+
+    VkDebugUtilsMessengerEXT callback;
+
+    VK_CHECK(vkCreateDebugUtilsMessengerEXT(instance, &createInfo, 0, &callback));
+
+    return callback;
+    
+
+
 }
 
 VkSurfaceKHR createSurface(VkInstance instance, GLFWwindow* window)
@@ -634,6 +675,11 @@ int main()
 
     VkInstance instance = createInstance();
     assert(instance);
+
+#ifdef _DEBUG
+    VkDebugUtilsMessengerEXT callback = registerDebugMessenger(instance);
+    assert(callback);
+#endif
 
     GLFWwindow* window = glfwCreateWindow(width, height, "Nirvana", 0, 0);
     assert(window);
